@@ -1,0 +1,332 @@
+---
+title: "Tarea ML"
+author: "Carlos Alberto Gómez Correa"
+date: "1/2/2021"
+output: pdf_document
+---
+
+
+### 1)
+
+$\\$
+
+Importemos y veamos los primeros datos de la base COVID que contiene 347,502 observaciones y 11 variables. Se realizará una operacionalización de la variable categórica **TIPO.PACIENTE**, como variable de predicción, para poder ajustar un modelo de regresión logística. De esta manera, los datos quedan como sigue:
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+library(dplyr)
+covid_modelo_tuneado <- read.csv("covid.csv", sep=",")
+covid <- read.csv("covid.csv", sep=",")
+
+str(covid)
+
+#head(covid)
+#View(covid)
+
+#Hospitalizado =1
+covid<-covid %>% mutate(TIPO.PACIENTE=as.factor(ifelse(TIPO.PACIENTE=="HOSPITALIZADO",1,0)))
+
+head(covid)
+```
+
+$\\$
+Efectuemos un ajuste de un modelo de regresión logística a los datos con todas las covariables. Para esto utilizaremos la función *glm* con la que se ajustan modelos lineales generalizados, colocando el parámetro *family* en binomial, es decir, especificando que los residuales tienen una distribución binomial.
+
+```{r}
+library(MASS)
+library(stats)
+#Ajustando un modelo de regresión logistica con todas las covariables
+ModeloCovidCompleto<-glm(factor(TIPO.PACIENTE)~SEXO + OBESIDAD + DIABETES + EPOC + 
+    ASMA + CARDIOVASCULAR + RENAL.CRONICA + INMUNOSUPRESION + 
+    HIPERTENSION + EDAD, data=covid,family = binomial)
+
+summary(ModeloCovidCompleto)
+
+
+
+```
+Al parecer, todas las covariables son significativas a un nivel de confianza del $95\%$.
+Efectuemos una selección del modelo mediante los modos de búsqueda *backward*, *forward* y *stepwise* con el criterio de Akaike como métrica.
+
+$\\$
+**Backward**
+
+```{r}
+backmode<-stepAIC(ModeloCovidCompleto, direction = "backward", trace = F)
+
+backmode$anova
+
+AIC(ModeloCovidCompleto)
+
+AIC(backmode)
+```
+$\\$
+
+**Forward**
+
+```{r}
+
+ModeloCovidVacio<-glm(factor(TIPO.PACIENTE)~1, data=covid,family = binomial)
+
+Meta<-formula(factor(TIPO.PACIENTE)~SEXO + OBESIDAD + DIABETES + EPOC + 
+    ASMA + CARDIOVASCULAR + RENAL.CRONICA + INMUNOSUPRESION + 
+    HIPERTENSION + EDAD)
+
+forwardmode<-stepAIC(ModeloCovidVacio, direction = "forward", trace = F, scope = Meta)
+
+forwardmode$anova
+
+AIC(forwardmode)
+
+```
+
+$\\$
+**Stepwise**
+```{r}
+library(Rcmdr)
+
+stepwiseModel<-stepwise(ModeloCovidCompleto,direction = "forward/backward",criterion = "AIC", trace=F)
+
+stepwiseModel$anova
+AIC(stepwiseModel)
+
+```
+
+Nótese que obtuvimos el mismo modelo en todos los casos.
+
+$\\$
+
+**Criterio de BIC**
+
+Efectuemos el método *stepwise* pero ahora con el Criterio de Información Bayesiano. 
+
+```{r}
+stepwiseModelBIC<-stepwise(ModeloCovidCompleto,direction = "forward/backward",criterion = "BIC", trace=F)
+
+BIC(ModeloCovidCompleto)
+stepwiseModelBIC$anova
+BIC(stepwiseModelBIC)
+```
+
+Mediante este (BIC), se obtuvo un modelo con una covariable menos que el modelo completo. La variable que se desechó fue *CARDIOVASCULAR*.
+
+$//$
+
+Realicemos todos los modelos posibles para obtener el criterio de Mallow y poder compararlo entre ellos.
+```{r}
+library(leaps)
+Todos<-regsubsets(factor(TIPO.PACIENTE)~SEXO + OBESIDAD + DIABETES + EPOC + 
+    ASMA + CARDIOVASCULAR + RENAL.CRONICA + INMUNOSUPRESION + 
+    HIPERTENSION + EDAD, data= covid, nbest=1,nvmax = 11)
+
+resumenMallow<-summary(Todos)
+
+
+
+```
+
+Confeccionemos la gráfica de Mallow $C_p$ contra el número de variables predictoras $p$. Note que se busca el modelo que cumpla $C_p \approx p$, es decir, buscamos los modelos que estén sobre o por debajo de la recta $x=y$.
+```{r echo=FALSE}
+plot(2:11,resumenMallow$cp, xlab="P+1", ylab="Mallow Cp")
+abline(a=0,b=1)
+```
+
+Los mejores modelos son los que tienen más de 4 variables. Identifiquemos cuáles son estos modelos:
+
+
+```{r}
+plot(2:11,resumenMallow$cp, xlab="P+1", ylab="Mallow Cp",ylim=c(0,100))
+abline(a=0,b=1)
+```
+
+Por la gráfica anterior, se determina que el mejor modelo es aquél con 10 variables.
+
+$//$
+
+Supongamos que debemos eliminar dos variables. Determinemos cuales serían mediante *varImp()*, posteriormente, ordenemos las variables por su nivel de importancia.
+
+
+
+```{r echo=FALSE}
+library(caret)
+library(dplyr)
+Im<-varImp(ModeloCovidCompleto, )
+Im  %>%
+    arrange(desc(Overall))
+
+
+```
+
+Por lo tanto, las dos variables que se eliminarían serían *ASMA* y *CARVIOVASCULAR*, pues son las que obtienen valores menores respecto a la estadística $t$ de Wald que permite establecer qué variables son de relevancia para explicar la probabilidad de que ocurra el suceso $Y=1$. Es decir, se contrastan las hipótesis $H_0:\beta_i=0~~v.s.~~H_a:\beta_i \neq 0$. Note que estos valores coinciden, por lo tanto, si se hubiese obtenido una jerarquización de las variables predictoras mediante los $p-value's$ resultantes de la función $summary$ del modelo ajustado con todas las covariables.
+
+$$\\$$
+Veamos que tan buenas son las predicciones con el modelo de 10 variables y el de 8 variables.
+
+Efecutemos un split del dataset utilizando $80\%$ para los datos de entrenamiento y $20\%$ para los datos de prueba.
+
+```{r}
+set.seed(22)
+n<-nrow(covid)
+
+# Permutación de los renglones
+RenglonesPermutados<-sample(n)
+
+#Ordenando aleatoriamente los datos
+covid_shuffled<-covid[RenglonesPermutados,]
+
+# Punto de split
+split <- round(n*.8)
+
+#Training
+covidTrain<-covid_shuffled[1:split,]
+
+#Test, 0,1
+covidTest<-covid_shuffled[(split+1):n,]
+
+```
+
+Efecutemos el ajuste de regresión logística para el set de entrenamiento y hagamos predicciones para el set de prueba:
+
+```{r}
+# Modelo con 10 covariables
+ModeloCovidML10Cov<-glm(factor(TIPO.PACIENTE)~SEXO + OBESIDAD + DIABETES + EPOC + 
+    ASMA + CARDIOVASCULAR + RENAL.CRONICA + INMUNOSUPRESION + 
+    HIPERTENSION + EDAD, data=covidTrain, family = binomial)
+
+ModeloCovidML8Cov<-glm(factor(TIPO.PACIENTE)~SEXO + OBESIDAD + DIABETES + EPOC +  RENAL.CRONICA + INMUNOSUPRESION + 
+    HIPERTENSION + EDAD, data=covidTrain, family = binomial)
+
+
+p1<-predict(ModeloCovidML10Cov,covidTest,type="response")
+
+p2<-predict(ModeloCovidML8Cov,covidTest,type="response")
+
+```
+
+$\\$
+Una vez ajustados estos modelos, evaluemos algunas métricas a través de la matriz de confusión.
+
+
+```{r}
+library(Rcmdr)
+library(caret)
+AmbuOrHosp1<-ifelse(p1>0.5,1,0)
+AmbuOrHosp2<-ifelse(p2>0.5,1,0)
+
+p1_clase<-factor(AmbuOrHosp1,levels = levels(covidTest[["TIPO.PACIENTE"]]))
+
+p2_clase<-factor(AmbuOrHosp2,levels = levels(covidTest[["TIPO.PACIENTE"]]))
+
+ConfMatModelo10<-confusionMatrix(p1_clase,covidTest[["TIPO.PACIENTE"]], positive = "1" )
+
+ConfMatModelo8<-confusionMatrix(p2_clase,covidTest[["TIPO.PACIENTE"]], positive = "1")
+
+
+```
+
+
+De esta manera, para el modelo con 8 variables tenemos las siguientes métricas de la matriz de confusión:
+
+```{r echo=FALSE}
+ConfMatModelo8
+```
+
+
+
+De manera análoga, estos son los resultados para el modelo con 10 covariables:
+
+
+```{r}
+ConfMatModelo10
+
+```
+
+En ambos modelos se tienen resultados similares en la precisión (aproximadamente 76%), sensibilidad ( aproximadamente 38%), y especificidad (90%), cada uno. Esto nos indica que si bien la precisión esta en un nivel decente, muchos individuos se están clasificando como pacientes ambulatorios  que en los datos reales sí están hospitalizados. Lo anterior lo podemos medir, utilizando los datos del primero modelo, mediante el siguiente cálculo:
+
+
+$$\frac{FN}{FN+TP}=0.6133469~~~_{....(1)}$$
+
+
+$\\$
+Efectuemos la evaluación de diferentes thresholds mediante la gráfica de la curva ROC, para ambos modelos.
+```{r}
+library(caTools)
+library(caret)
+ROC1<-colAUC(p1, covidTest[["TIPO.PACIENTE"]],plotROC =T)
+ROC2<- colAUC(p2, covidTest[["TIPO.PACIENTE"]],plotROC = T)
+
+ROC1
+ROC2
+
+```
+
+Note que los valorse del AUC son un poco mayores al $77\%$, lo que denota que el modelo ejecuta de manera decente la clasificación.
+
+Ajustemos los parámetros del modelo respecto al AUC en lugar de la precisión para mejorar el resultado, mediante Cross-Validation.
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+# Tunning control
+ControlTunning<-trainControl(method = "cv", number=5, summaryFunction = twoClassSummary,classProbs = T,verboseIter = T,)
+
+# Tunneado Modelo
+#levels(covid_modelo_tuneado$TIPO.PACIENTE)=c("1","0")
+
+
+##### #prueba
+ levels(covid$TIPO.PACIENTE)<-c("AMBULATORIO","HOSPITALIZADO")
+#####
+
+ModeloCovidTuneado<-train(TIPO.PACIENTE~SEXO + OBESIDAD + DIABETES + EPOC + 
+    ASMA + CARDIOVASCULAR + RENAL.CRONICA + INMUNOSUPRESION + 
+    HIPERTENSION + EDAD, data=covid, method="glm",trControl=ControlTunning, metric="ROC")
+
+ModeloCovidTuneado
+ModeloCovidTuneado$finalModel
+ModeloCovidTuneado$metric
+
+```
+
+ Notemos como a través de la validación cruzada conse ha mejorado ligeramente la sensibilidad, la especificidad y el area bajo la curva ROC. Ahora, efectuemos con el modelo lineal generalizado obtenido, predicciones sobre el set de prueba y verifiquemos su eficacia.
+
+```{r}
+
+calc_acc = function(actual, predicted) {
+  mean(actual == predicted)
+}
+
+ 
+#covidTest<-covidTest%>% mutate(TIPO.PACIENTE=as.factor(ifelse(TIPO.PACIENTE==1,"HOSPITALIZADO","AMBULATORIO")))
+
+levels(covidTest$TIPO.PACIENTE)<-c("AMBULATORIO","HOSPITALIZADO")
+
+
+prediccion_tuneado<-predict(ModeloCovidTuneado,newdata = covidTest, type="raw")
+ 
+ 
+ 
+calc_acc(actual = covidTest$TIPO.PACIENTE,
+         predicted = prediccion_tuneado)
+
+
+
+confusionMatrix(covidTest$TIPO.PACIENTE,prediccion_tuneado, positive = "HOSPITALIZADO")
+
+
+  
+  
+  
+```
+
+
+Realicemos el siguiente cálculo:
+
+$$\frac{FN}{FN+TP}=0.35959~~~_{....(2)}$$
+
+
+Con estos resultados tenemos que, para el set de prueba, la proporción de predicciones correctas (precisión) se mantuvo sobre el $76\%$, sin embargo, hubo un mejoramiento en el balance respecto a la sensibilidad y la especificidad, pues la primera aumentó a $64\%$ y la segunda disminuyó al $79\%$. De esta manera, por (1) y (2) concluimos que con este entrenamiento del modelo el porcentaje de pacientes hospitalizados que la regresión clasificó como ambulatorios pasó de $61\%$ a $35\%$.
+
+
+
+
+
+
+
